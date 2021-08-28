@@ -1,0 +1,5 @@
+# Function dependencies, for example:
+# package>=version
+mecab-python3
+ipadic
+firebase_admin
