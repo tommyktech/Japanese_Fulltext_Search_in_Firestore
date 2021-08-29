@@ -1,7 +1,7 @@
 # Japanese Full-text Search in Firestore (with Cloud Functions)
 Google Cloud Platform(GCP)のFirestoreで関連度付きの全文検索機能をお手軽に実現するためのCloud Functionsスクリプト。
 
-Firestoreには全文検索機能が無いため、Elasticsearch等を使うかFirestore上に全文検索インデックスを自力で構築する必要があります。  
+Firestoreには全文検索機能が無いため、全文検索が必要な場合はElasticsearch等を使うかFirestore上に全文検索インデックスを自力で構築する必要があります。
 このスクリプトは、そのインデックスの構築を行い、Firestore（とCloud Functions）で全文検索を可能にするためのものです。  
 
 ## 機能
