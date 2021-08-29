@@ -1,4 +1,4 @@
-import os, hashlib, json, re, time
+import os, hashlib, json, re, time, random, string
 import MeCab, ipadic
 import firebase_admin
 from firebase_admin import firestore
@@ -28,6 +28,10 @@ class FulltextSearch:
     def print_access_count(self):
         if self.is_debug:
             print("read_cnt: ", self.read_cnt, "update_cnt: ", self.update_cnt)
+
+    # ランダムな document id を作成する関数。Firestoreの自動作成IDは長いのでバイト数の無駄遣い。
+    def __create_doc_id(self, len=4):
+        return ''.join(random.choices(string.ascii_letters + string.digits, k=len))
 
     # 検索用のハッシュを作成する。テキストが長いと検索できないので。
     def __hash_text(self, text:str) -> str:
@@ -75,11 +79,20 @@ class FulltextSearch:
             for k, v in dict.items():
                 body[k] = v
 
+        # text の doc_id が無いなら生成する。
         if doc_id is None:
-            _, doc_ref = self.text_collection.add(document_data=body)
-        else:
-            _, doc_ref = self.text_collection.document(doc_id).set(body)
-        doc_id = doc_ref.id
+            loop_cnt = 0
+            max_loop_cnt = 10
+            while loop_cnt < max_loop_cnt:
+                doc_id = self.__create_doc_id()
+                if not self.__text_exists(text, doc_id):
+                    break
+                loop_cnt += 1
+                if loop_cnt >= max_loop_cnt:
+                    raise Exception("{} collection用のIDが重複しすぎて生成できなかった".format(TEXTS_COLLECTION_NAME))
+                print("{} collection用のIDが重複した".format(TEXTS_COLLECTION_NAME))
+
+        self.text_collection.document(doc_id).set(body)
         self.update_cnt += 1
         return doc_id
 
@@ -98,13 +111,13 @@ class FulltextSearch:
         return terms
 
     # 複数件をまとめてfirestoreに入れる
-    # text_list: (text, metadata) のリスト
+    # text_list: (text, doc_id, metadata) のリスト
     def insert_text_list(self, text_list:list) -> list:
         terms_dict = {}
         text_doc_ids = []
-        for text, metadata in text_list:
+        for text, doc_id, metadata in text_list:
             # まずテキストデータを入れる
-            text_doc_id = self.__add_text(text, metadata)
+            text_doc_id = self.__add_text(text, doc_id, metadata)
             if text_doc_id == "":
                 # print("このデータはすでに入っているので飛ばす", text[:30])
                 continue
@@ -202,24 +215,25 @@ class FulltextSearch:
         now = time.time()
         # クエリ文字列を分解する
         query_str = re.sub(r"[ 　]+", " ", query_str)
-        query_terms = set()
+        query_terms = {}
         for term in query_str.split(" "):
-            query_terms = query_terms | set(self.__wakati_text(term))
-        query_terms = list(query_terms)
+            for t in self.__wakati_text(term):
+                query_terms[t] = True
+        query_terms = list(query_terms.keys())
 
         # 各ワードが含まれるドキュメントのIDを取得する
         query_results = {}
         for term in query_terms:
-            query = self.terms_collection.where("term", "==", term)
-            docs = query.stream()
-            for doc in docs:
-                doc_dict = doc.to_dict()
-                for text_doc_id in doc_dict["doc_ids"]:
-                    if text_doc_id not in query_results:
-                        query_results[text_doc_id] = {}
-                    tfidf = doc_dict["doc_ids"][text_doc_id] / len(doc_dict["doc_ids"])
-                    query_results[text_doc_id][term] = tfidf
-
+            doc = self.terms_collection.document(term).get()
+            if not doc.exists:
+                continue
+            doc_dict = doc.to_dict()
+            for text_doc_id in doc_dict["doc_ids"]:
+                term_frequency = doc_dict["doc_ids"][text_doc_id]
+                if text_doc_id not in query_results:
+                    query_results[text_doc_id] = {}
+                tfidf = term_frequency / len(doc_dict["doc_ids"])
+                query_results[text_doc_id][term] = tfidf
         # 検索ワードにマッチした結果を取得し、tfidfっぽい値を計算する。
         fully_matched_results = {}
         for text_doc_id, query_result in query_results.items():
@@ -260,15 +274,17 @@ def main(request):
         Response object using
         `make_response <http://flask.pocoo.org/docs/1.0/api/#flask.Flask.make_response>`.
     """
-    request_json = request.get_json()
-    if request.args and 'method' in request.args:
+    method = None
+
+
+    request_json = request.get_json(silent=True)
+    if request_json and 'method' in request_json:
+        method = request_json['method']
+    elif request.args and 'method' in request.args:
         method = request.args.get('method')
-    else:
-        return json.dumps({"error": "specify a method name ([insert, insert_text_list, delete, delete_by_text, search])."})
 
     if method not in ["insert", "insert_text_list", "delete", "delete_by_text", "search"]:
-        return json.dumps({"error": "specify a valid method name ([insert, insert_text_list, delete, delete_by_text, search])."})
-
+        return json.dumps({"error": "specify a valid method name ([insert, insert_text_list, delete, delete_by_text, search]).", "request_json": request_json, "request.args": request.args})
 
     text = None
     doc_id = None
@@ -284,9 +300,8 @@ def main(request):
         doc_id = request.args.get('doc_id')
     if request.args and 'q' in request.args:
         q = request.args.get('q')
-    if request.args and 'text_list' in request.args:
-        text_list_json_str = request.args.get('text_list')
-        text_list = json.loads(text_list_json_str)
+    if request_json and 'text_list' in request_json:
+        text_list = request_json['text_list']
     
     # メソッドごとに処理を分ける
     fulltext_search = FulltextSearch()
@@ -305,7 +320,10 @@ def main(request):
             return json.dumps({"error": "specify text_list parameter. "})
 
         text_doc_ids = fulltext_search.insert_text_list(text_list)
-        return json.dumps({"result": "created", "text_doc_ids": text_doc_ids})
+        if len(text_doc_ids) > 0:
+            return json.dumps({"result": "created", "text_doc_ids": text_doc_ids})
+        else:
+            return json.dumps({"result": "no documents created"})
 
     if method == "delete":
         if doc_id is None:
