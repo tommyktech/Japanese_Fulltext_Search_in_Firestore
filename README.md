@@ -18,7 +18,7 @@ Firestoreには全文検索機能が無いため、Firestoreのみで全文検�
 
 ## 使い方
 * GCPのプロジェクトを用意し、そこでFirestoreを有効にする
-* main.pyの上の方にあるFIRESTORE_PROJECT_NAMEを編集する（既存のFirestoreのプロジェクト名と被らないように）
+* 必要であれば、main.pyの上の方にあるFIRESTORE_PROJECT_NAME等を編集する
 * Cloud FunctionsにHTTPをトリガーとする関数を作成する（メモリは2GB以上推奨）
 * そこにmain.pyとrequirements.txtをデプロイする
 * HTTPにアクセスして、データの登録・検索・削除が可能であることを確認する
