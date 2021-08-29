@@ -1,20 +1,24 @@
-import os, hashlib, json, re
+import os, hashlib, json, re, time
 import MeCab, ipadic
 import firebase_admin
 from firebase_admin import firestore
 from firebase_admin import credentials
+
+FIRESTORE_PROJECT_ID = "fulltext-project"
+TEXTS_COLLECTION_NAME = "texts"
+TERMS_COLLECTION_NAME = "terms"
 
 class FulltextSearch:
     def __init__(self):
         if not firebase_admin._apps:
             cred = credentials.ApplicationDefault()
             firebase_admin.initialize_app(cred,{
-                'projectId': "fulltext-project",
+                'projectId': FIRESTORE_PROJECT_ID,
             })
 
         self.db = firestore.client()
-        self.text_collection = self.db.collection(u'texts')
-        self.terms_collection = self.db.collection(u'terms')
+        self.text_collection = self.db.collection(TEXTS_COLLECTION_NAME)
+        self.terms_collection = self.db.collection(TERMS_COLLECTION_NAME)
         self.is_debug = False
         self.read_cnt = 0
         self.update_cnt = 0
@@ -180,7 +184,8 @@ class FulltextSearch:
         for doc in docs:
             self.read_cnt += 1
             body = {
-                "doc_ids.{}".format(text_doc_id): firestore.DELETE_FIELD
+                "doc_ids.{}".format(text_doc_id): firestore.DELETE_FIELD,
+                "num_docs":firestore.Increment(-1)
             }
             term_doc_id = doc.id
             self.terms_collection.document(term_doc_id).update(body)
@@ -194,6 +199,7 @@ class FulltextSearch:
 
     # 検索を実行する
     def search(self, query_str:str, limit:int=10, should_match_all:bool=True) -> list:
+        now = time.time()
         # クエリ文字列を分解する
         query_str = re.sub(r"[ 　]+", " ", query_str)
         query_terms = set()
@@ -242,9 +248,10 @@ class FulltextSearch:
             if doc_dict is None:
                 continue
             results.append({"text_doc_id": text_doc_id, "text": doc_dict["text"], "score": score})
-        return {"total": len(fully_matched_results), "hits": results}
+        took = str(int((time.time() - now) * 1000)) + " ms"
+        return {"total": len(fully_matched_results), "took": took, "hits": results}
 
-def hello_world(request):
+def main(request):
     """Responds to any HTTP request.
     Args:
         request (flask.Request): HTTP request object.
