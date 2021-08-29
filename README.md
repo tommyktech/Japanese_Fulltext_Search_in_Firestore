@@ -1,8 +1,8 @@
 # Japanese Full-text Search in Firestore (with Cloud Functions)
 Google Cloud Platform(GCP)のFirestoreで関連度付きの全文検索機能をお手軽に実現するためのCloud Functionsスクリプト。
 
-Firestoreには全文検索機能が無いため、Firestoreのみで全文検索を実現する場合はインデックスを自力で構築する必要があります。  
-このスクリプトは、その構築を行い、Firestore（とCloud Functions）で全文検索を可能にするためのものです。  
+Firestoreには全文検索機能が無いため、Elasticsearch等を使うかFirestore上に全文検索インデックスを自力で構築する必要があります。  
+このスクリプトは、そのインデックスの構築を行い、Firestore（とCloud Functions）で全文検索を可能にするためのものです。  
 
 ## 機能
 * 入力テキストを全文検索可能にする
@@ -21,15 +21,15 @@ Firestoreには全文検索機能が無いため、Firestoreのみで全文検�
 * 必要であれば、main.pyの上の方にあるFIRESTORE_PROJECT_NAME等を編集する
 * Cloud FunctionsにHTTPをトリガーとする関数を作成する（メモリは2GB以上推奨）
 * そこにmain.pyとrequirements.txtをデプロイする
-* HTTPにアクセスして、データの登録・検索・削除が可能であることを確認する
+* HTTPのURLにアクセスして、データの登録・検索・削除が可能であることを確認する
   * データの登録例: https://[トリガーURL]?method=insert&text=本日は晴天なり
   * 検索: https://[トリガーURL]?method=search&q=本日は晴天なり
-  * 削除: https://[トリガーURL]?method=delete&text=本日は晴天なり
+  * 削除: https://[トリガーURL]?method=delete&doc_id=[テキストのdoc_id]
 
 
 ## 仕組み
 入力テキストはMeCab(+IPADIC)により単語へと分解され、各単語がFirestoreに格納されます（入力テキストも単語とは別のコレクションに格納されます）。
-格納される形式は基本的に転置インデックス、つまり`単語 => テキストが保存されているドキュメントのID`というMap構造のインデックスになります。  
+格納される形式は基本的に転置インデックス、つまり`単語 => [テキストが保存されているドキュメントのID]`というMap構造のインデックスになります。  
   
 検索時にはクエリ文字列をMeCabで単語へと分解し、その単語を含むテキストのドキュメントIDをインデックスから取得してテキストの一覧を表示します。
 このときテキストが関連度順に並び替えられますが、その関連度の計算にはTF-IDFを一部簡略化したものを用いています。  
