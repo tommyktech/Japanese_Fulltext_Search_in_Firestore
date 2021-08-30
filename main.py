@@ -8,7 +8,7 @@ FIRESTORE_PROJECT_ID = "fulltext-project"
 TEXTS_COLLECTION_NAME = "texts"
 TERMS_COLLECTION_NAME = "terms"
 
-class FulltextSearch:
+class FulltextIndex:
     def __init__(self):
         if not firebase_admin._apps:
             cred = credentials.ApplicationDefault()
@@ -33,68 +33,26 @@ class FulltextSearch:
     def __create_doc_id(self, len=4):
         return ''.join(random.choices(string.ascii_letters + string.digits, k=len))
 
+    # texts_collection用のdoc_id作成関数。重複があればリトライする
+    def __create_texts_collection_doc_id(self, text, len=4):
+        loop_cnt = 0
+        max_loop_cnt = 10
+        while loop_cnt < max_loop_cnt:
+            doc_id = self.__create_doc_id()
+            doc = self.text_collection.document(doc_id).get()
+            if not doc.exists:
+                # 存在しないIDが生成できたらreturn
+                return doc_id
+            loop_cnt += 1
+            if loop_cnt >= max_loop_cnt:
+                raise Exception("{} collection用のIDが重複しすぎて生成できなかった".format(TEXTS_COLLECTION_NAME))
+            print("{} collection用のIDが重複した".format(TEXTS_COLLECTION_NAME))
+
     # 検索用のハッシュを作成する。テキストが長いと検索できないので。
     def __hash_text(self, text:str) -> str:
         # sha256でもいいが、データ量を削減したいのでmd5で。
         hashed_str = hashlib.md5(text.encode('utf-8')).hexdigest()
         return hashed_str
-
-    # text が text_collectionの中にすでに存在するかどうかを確認する
-    def __text_exists(self, text:str, doc_id:str = None) -> bool:
-        if doc_id is not None:
-            doc = self.text_collection.document(doc_id).get()
-            return doc.exists
-        hash = self.__hash_text(text)
-        query_ref = self.text_collection.where("hash", "==", hash)
-        self.read_cnt += 1
-        docs = query_ref.stream()
-        for doc in docs:
-            self.read_cnt += 1
-            if doc.to_dict()["text"] == text:
-                return True
-        return False
-    
-    # doc id をtextに設定しない場合にdoc id を取得したいときに使う
-    def get_doc_id_from_text(self, text:str) -> str:
-        hash = self.__hash_text(text)
-        query_ref = self.text_collection.where("hash", "==", hash)
-        self.read_cnt += 1
-        docs = query_ref.stream()
-        for doc in docs:
-            self.read_cnt += 1
-            if doc.to_dict()["text"] == text:
-                return doc.id
-        return ""
-
-    # textをtext_collectionに追加する
-    def __add_text(self, text:str, doc_id:str = None, metadata:dict = None) -> str:
-        if self.__text_exists(text, doc_id):
-            # すでにtextが存在するなら何もしない
-            return ""
-
-        # textが存在しないので実際にcollectionにデータを追加する
-        hash = self.__hash_text(text)
-        body = {"text": text, "hash":hash}
-        if metadata is not None:
-            for k, v in dict.items():
-                body[k] = v
-
-        # text の doc_id が無いなら生成する。
-        if doc_id is None:
-            loop_cnt = 0
-            max_loop_cnt = 10
-            while loop_cnt < max_loop_cnt:
-                doc_id = self.__create_doc_id()
-                if not self.__text_exists(text, doc_id):
-                    break
-                loop_cnt += 1
-                if loop_cnt >= max_loop_cnt:
-                    raise Exception("{} collection用のIDが重複しすぎて生成できなかった".format(TEXTS_COLLECTION_NAME))
-                print("{} collection用のIDが重複した".format(TEXTS_COLLECTION_NAME))
-
-        self.text_collection.document(doc_id).set(body)
-        self.update_cnt += 1
-        return doc_id
 
     # mecabで分かち書き
     def __wakati_text(self, text:str) -> list:
@@ -110,17 +68,59 @@ class FulltextSearch:
             node = node.next
         return terms
 
+    # textをtext_collectionに追加する
+    def __add_text(self, text:str, doc_id:str = None, metadata:dict = {}) -> str:
+        if doc_id is None:
+            # text の doc_id が無いなら生成する。
+            doc_id = self.__create_texts_collection_doc_id(text)
+
+        # collectionにデータを追加する
+        hash = self.__hash_text(text)
+        body = {"text": text, "hash":hash}
+        metadata.update(body)
+        body = metadata
+
+        self.text_collection.document(doc_id).set(body)
+        self.update_cnt += 1
+        return doc_id
+
+    # text が text_collectionの中にすでに存在するかどうかを確認する
+    def __text_exists(self, text:str, doc_id:str = None) -> bool:
+        if doc_id is not None:
+            doc = self.text_collection.document(doc_id).get()
+            return doc.exists
+        hash = self.__hash_text(text)
+        query_ref = self.text_collection.where("hash", "==", hash)
+        self.read_cnt += 1
+        docs = query_ref.stream()
+        for doc in docs:
+            self.read_cnt += 1
+            if doc.to_dict()["text"] == text:
+                return True
+        return False
+
+    # textsコレクションからデータを取得する
+    def get_text_by_id(self, doc_id:str):
+        doc = self.text_collection.document(doc_id).get()
+        if doc.exists:
+            return doc.to_dict()
+        
+        return None
+
     # 複数件をまとめてfirestoreに入れる
     # text_list: (text, doc_id, metadata) のリスト
-    def insert_text_list(self, text_list:list) -> list:
+    def index_text_list(self, text_list:list) -> list:
         terms_dict = {}
         text_doc_ids = []
         for text, doc_id, metadata in text_list:
+            if doc_id is not None:
+                # doc_id が重複する場合は古い方を削除する
+                doc = self.text_collection.document(doc_id).get()
+                if doc.exists:
+                    self.delete(doc_id)
+
             # まずテキストデータを入れる
             text_doc_id = self.__add_text(text, doc_id, metadata)
-            if text_doc_id == "":
-                # print("このデータはすでに入っているので飛ばす", text[:30])
-                continue
             text_doc_ids.append(text_doc_id)
 
             # テキストデータは無事入ったのでその後の処理を行う
@@ -146,12 +146,15 @@ class FulltextSearch:
         return text_doc_ids
 
     # テキストをfirestoreに入れて全文検索可能にする
-    def insert_text(self, text:str, doc_id:str = None, metadata:dict=None) -> str:
+    def index_text(self, text:str, doc_id:str = None, metadata:dict={}) -> str:
+        if doc_id is not None:
+            # doc_id が重複する場合は古い方を削除する
+            doc = self.text_collection.document(doc_id).get()
+            if doc.exists:
+                self.delete(doc_id)
+
         # まずはテキストデータを入れる
         text_doc_id = self.__add_text(text, doc_id, metadata)
-        if text_doc_id == "":
-            # すでに入っている場合はここで終了する。TODO 終了しなくてもいいかも
-            return ""
 
         # テキストデータは無事入ったので次は単語を入れる
         terms = self.__wakati_text(text)
@@ -187,6 +190,19 @@ class FulltextSearch:
             self.terms_collection.document(term).set(item, merge=True)
         
         return text_doc_id
+
+    # doc id をtextに設定しない場合にdoc id を取得したいときに使う
+    def get_doc_id_from_text(self, text:str) -> str:
+        hash = self.__hash_text(text)
+        query_ref = self.text_collection.where("hash", "==", hash)
+        self.read_cnt += 1
+        docs = query_ref.stream()
+        doc_ids = []
+        for doc in docs:
+            self.read_cnt += 1
+            if doc.to_dict()["text"] == text:
+                doc_ids.append(doc.id)
+        return doc_ids
 
     # テキストとそのデータを消す
     def delete(self, text_doc_id:str) -> str:
@@ -266,31 +282,21 @@ class FulltextSearch:
         return {"total": len(fully_matched_results), "took": took, "hits": results}
 
 def main(request):
-    """Responds to any HTTP request.
-    Args:
-        request (flask.Request): HTTP request object.
-    Returns:
-        The response text or any set of values that can be turned into a
-        Response object using
-        `make_response <http://flask.pocoo.org/docs/1.0/api/#flask.Flask.make_response>`.
-    """
     method = None
-
-
     request_json = request.get_json(silent=True)
     if request_json and 'method' in request_json:
         method = request_json['method']
     elif request.args and 'method' in request.args:
         method = request.args.get('method')
 
-    if method not in ["insert", "insert_text_list", "delete", "delete_by_text", "search"]:
-        return json.dumps({"error": "specify a valid method name ([insert, insert_text_list, delete, delete_by_text, search]).", "request_json": request_json, "request.args": request.args})
+    if method not in ["get", "index", "index_text_list", "delete", "delete_by_text", "search"]:
+        return json.dumps({"error": "specify a valid method name ([get index index_text_list delete delete_by_text search]).", "request_json": request_json, "request.args": request.args})
 
     text = None
     doc_id = None
     q = None
     text_list = None
-    metadata = None
+    metadata = {}
     if request.args and 'text' in request.args:
         text = request.args.get('text')
     if request.args and 'metadata' in request.args:
@@ -304,22 +310,32 @@ def main(request):
         text_list = request_json['text_list']
     
     # メソッドごとに処理を分ける
-    fulltext_search = FulltextSearch()
-    if method == "insert":
+    fulltext_index = FulltextIndex()
+    if method == "get":
+        if doc_id is None:
+            return json.dumps({"error": "specify doc_id parameter. "})
+
+        doc = fulltext_index.get_text_by_id(doc_id)
+        if doc is None:
+            return json.dumps({"result": "not exists", "doc": doc})
+        else:
+            return json.dumps({"result": "success", "doc": doc})
+
+    if method == "index":
         if text is None:
             return json.dumps({"error": "specify text parameter. "})
 
-        new_doc_id = fulltext_search.insert_text(text, doc_id, metadata)
+        new_doc_id = fulltext_index.index_text(text, doc_id, metadata)
         if new_doc_id == "":
             return json.dumps({"result": "already exists", "text": text})
         else:
             return json.dumps({"result": "created", "doc_id": new_doc_id})
 
-    if method == "insert_text_list":
+    if method == "index_text_list":
         if text_list is None:
             return json.dumps({"error": "specify text_list parameter. "})
 
-        text_doc_ids = fulltext_search.insert_text_list(text_list)
+        text_doc_ids = fulltext_index.index_text_list(text_list)
         if len(text_doc_ids) > 0:
             return json.dumps({"result": "created", "text_doc_ids": text_doc_ids})
         else:
@@ -329,26 +345,28 @@ def main(request):
         if doc_id is None:
             return json.dumps({"error": "specify doc_id parameter. "})
 
-        res = fulltext_search.delete(doc_id)
+        res = fulltext_index.delete(doc_id)
         return json.dumps({"result": res})
 
     if method == "delete_by_text":
         if text is None:
             return json.dumps({"error": "specify text parameter. "})
 
-        text_doc_id = fulltext_search.get_doc_id_from_text(text)
-        if text_doc_id == "":
+        text_doc_ids = fulltext_index.get_doc_id_from_text(text)
+        if len(text_doc_ids) == 0:
             # データが無い
             return json.dumps({"result": "missing text", "text":text})
-
-        res = fulltext_search.delete(text_doc_id)
-        return json.dumps({"result": res})
+        res_arr = []
+        for text_doc_id in text_doc_ids:
+            res = fulltext_index.delete(text_doc_id)
+            res_arr.append(res)
+        return json.dumps({"result": res_arr})
 
     if method == "search":
         if q is None:
             return json.dumps({"error": "specify q parameter. "})
 
-        results = fulltext_search.search(q)
+        results = fulltext_index.search(q)
         return json.dumps(results)
     
 
