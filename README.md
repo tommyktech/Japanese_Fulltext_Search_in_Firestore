@@ -23,9 +23,9 @@ Firestoreには全文検索機能が無いため、全文検索が必要な場�
 * Cloud FunctionsにHTTPをトリガーとする関数を作成する（メモリは2GB以上推奨）
 * そこにmain.pyとrequirements.txtをデプロイする
 * HTTPのURLにアクセスして、データの登録・検索・削除が可能であることを確認する
-  * データの登録例: https://[トリガーURL]?method=insert&text=本日は晴天なり
-  * 検索: https://[トリガーURL]?method=search&q=本日は晴天なり
-  * 削除: https://[トリガーURL]?method=delete&doc_id=[テキストのdoc_id]
+  * データの登録例: https://[CloudFunctionsのトリガーURL]?method=index&text=本日は晴天なり
+  * 検索: https://[CloudFunctionsのトリガーURL]?method=search&q=本日は晴天なり
+  * 削除: https://[CloudFunctionsのトリガーURL]?method=delete&doc_id=[テキストのdoc_id]
 
 
 ## 仕組み
