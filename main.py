@@ -227,7 +227,7 @@ class FulltextIndex:
         return str(res)
 
     # 検索を実行する
-    def search(self, query_str:str, limit:int=10, should_match_all:bool=True) -> list:
+    def search(self, query_str:str, size:int=10, should_match_all:bool=True) -> list:
         now = time.time()
         # クエリ文字列を分解する
         query_str = re.sub(r"[ 　]+", " ", query_str)
@@ -269,7 +269,7 @@ class FulltextIndex:
         # tfidf値の上位limit件を取得して返す
         results = []
         for i, item in enumerate(score_sorted):
-            if i > limit:
+            if i > size:
                 break
             text_doc_id = item[0]
             score = item[1]
@@ -297,6 +297,7 @@ def main(request):
     q = None
     text_list = None
     metadata = {}
+    size = 10
     if request.args and 'text' in request.args:
         text = request.args.get('text')
     if request.args and 'metadata' in request.args:
@@ -306,6 +307,8 @@ def main(request):
         doc_id = request.args.get('doc_id')
     if request.args and 'q' in request.args:
         q = request.args.get('q')
+    if request.args and 'size' in request.args:
+        size = int(request.args.get('size'))
     if request_json and 'text_list' in request_json:
         text_list = request_json['text_list']
     
@@ -366,7 +369,7 @@ def main(request):
         if q is None:
             return json.dumps({"error": "specify q parameter. "})
 
-        results = fulltext_index.search(q)
+        results = fulltext_index.search(q, size)
         return json.dumps(results)
     
 
