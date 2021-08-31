@@ -23,9 +23,9 @@ Firestoreには全文検索機能が無いため、全文検索が必要な場�
 * Cloud FunctionsにHTTPをトリガーとする関数を作成する（メモリは2GB以上推奨）
 * そこにmain.pyとrequirements.txtをデプロイする
 * HTTPのURLにアクセスして、データの登録・検索・削除が可能であることを確認する
-  * データの登録例: https://[トリガーURL]?method=insert&text=本日は晴天なり
-  * 検索: https://[トリガーURL]?method=search&q=本日は晴天なり
-  * 削除: https://[トリガーURL]?method=delete&doc_id=[テキストのdoc_id]
+  * データの登録例: https://[CloudFunctionsのトリガーURL]?method=index&text=本日は晴天なり
+  * 検索: https://[CloudFunctionsのトリガーURL]?method=search&q=本日は晴天なり
+  * 削除: https://[CloudFunctionsのトリガーURL]?method=delete&doc_id=[テキストのdoc_id]
 
 
 ## 仕組み
@@ -44,5 +44,5 @@ Firestoreには全文検索機能が無いため、全文検索が必要な場�
 また、テキストデータの登録があまりにも高頻度だとFirestoreの別の制限（1秒に1回以上同一のドキュメントを更新できない）に引っかかってしまうため、
 一度に大量のデータを登録する場合は`method=insert_text_list`の利用をおすすめします。
 
-また、HTTPのAPI仕様がダサいので、REST化を検討中です。
-
+あと、HTTPのAPI仕様がダサいので、REST化を検討中です。
+もう一つ、一部にトランザクションも導入したいと思っています。
