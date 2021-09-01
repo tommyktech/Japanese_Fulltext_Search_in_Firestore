@@ -40,6 +40,7 @@ class FulltextIndex:
     def __create_doc_id(self, len=4):
         return ''.join(random.choices(string.ascii_letters + string.digits, k=len))
 
+
     # texts_collection用のdoc_id作成関数。重複があればリトライする
     def __create_texts_collection_doc_id(self, text, len=4):
         loop_cnt = 0
@@ -55,11 +56,13 @@ class FulltextIndex:
                 raise Exception("{} collection用のIDが重複しすぎて生成できなかった".format(TEXTS_COLLECTION_NAME))
             print("{} collection用のIDが重複した".format(TEXTS_COLLECTION_NAME))
 
+
     # 検索用のハッシュを作成する。テキストが長いと検索できないので。
     def __hash_text(self, text:str) -> str:
         # sha256でもいいが、データ量を削減したいのでmd5で。
         hashed_str = hashlib.md5(text.encode('utf-8')).hexdigest()
         return hashed_str
+
 
     # mecabで分かち書き
     def __wakati_text(self, text:str) -> list:
@@ -74,6 +77,43 @@ class FulltextIndex:
                     terms.append(term)
             node = node.next
         return terms
+
+
+    # テキストデータをコレクションに入れるための構造に変える
+    def __build_text_document_data(self, text:str, text_doc_id:str = None, metadata:dict={}):
+        if text_doc_id is None:
+            # text の doc_id が無いなら生成する。
+            text_doc_id = self.__create_texts_collection_doc_id(text)
+
+        if metadata is None:
+            metadata = {}
+
+        # text を入れるバッチをセットする
+        hash = self.__hash_text(text)
+        body = {"text": text, "hash":hash}
+        metadata.update(body)
+        return text_doc_id, metadata
+        
+
+    # 単語データをコレクションに入れるための構造に変える
+    def __build_term_document_data(self, text:str, text_doc_id:str):
+        terms_dict = {}
+        terms = self.__wakati_text(text)
+        # 単語コレクションに入れるデータは単語ごとにまとめる
+        for term in terms:
+            if term in [".", ".."] or term.find("/") >= 0:
+                # print("doc_idに {} は使えません".format(term))
+                continue
+
+            if term not in terms_dict:
+                terms_dict[term] = {"term": term, "doc_ids":{text_doc_id:0}, "num_docs": 0}
+            if text_doc_id not in terms_dict[term]["doc_ids"]:
+                terms_dict[term]["doc_ids"][text_doc_id] = 0
+            terms_dict[term]["doc_ids"][text_doc_id] += 1 / len(terms) # term frequency
+            terms_dict[term]["num_docs"] = len(terms_dict[term]["doc_ids"])# doc frequecy に該当する値。実はtfidf計算時には使ってない。
+
+        return terms_dict
+
 
     # textsコレクションからデータを取得する
     def get_text_by_id(self, doc_id:str):
@@ -121,40 +161,6 @@ class FulltextIndex:
         return text_doc_ids
 
 
-    # テキストデータをコレクションに入れるための構造に変える
-    def __build_text_document_data(self, text:str, text_doc_id:str = None, metadata:dict={}):
-        if text_doc_id is None:
-            # text の doc_id が無いなら生成する。
-            text_doc_id = self.__create_texts_collection_doc_id(text)
-
-        if metadata is None:
-            metadata = {}
-
-        # text を入れるバッチをセットする
-        hash = self.__hash_text(text)
-        body = {"text": text, "hash":hash}
-        metadata.update(body)
-        return text_doc_id, metadata
-        
-    # 単語データをコレクションに入れるための構造に変える
-    def __build_term_document_data(self, text:str, text_doc_id:str):
-        terms_dict = {}
-        terms = self.__wakati_text(text)
-        # 単語コレクションに入れるデータは単語ごとにまとめる
-        for term in terms:
-            if term in [".", ".."] or term.find("/") >= 0:
-                # print("doc_idに {} は使えません".format(term))
-                continue
-
-            if term not in terms_dict:
-                terms_dict[term] = {"term": term, "doc_ids":{text_doc_id:0}, "num_docs": 0}
-            if text_doc_id not in terms_dict[term]["doc_ids"]:
-                terms_dict[term]["doc_ids"][text_doc_id] = 0
-            terms_dict[term]["doc_ids"][text_doc_id] += 1 / len(terms) # term frequency
-            terms_dict[term]["num_docs"] = len(terms_dict[term]["doc_ids"])# doc frequecy に該当する値。実はtfidf計算時には使ってない。
-
-        return terms_dict
-
     # テキストをfirestoreに入れて全文検索可能にする
     def index_text(self, text:str, text_doc_id:str = None, metadata:dict={}) -> str:
         if text_doc_id is not None:
@@ -198,6 +204,7 @@ class FulltextIndex:
             if doc.to_dict()["text"] == text:
                 doc_ids.append(doc.id)
         return doc_ids
+
 
     # テキストとそのデータを消す
     def delete(self, text_doc_id:str) -> bool:
@@ -249,6 +256,7 @@ class FulltextIndex:
         batch.commit()
 
         return True
+
 
     # 検索を実行する
     def search(self, query_str:str, size:int=10, should_match_all:bool=True) -> list:
