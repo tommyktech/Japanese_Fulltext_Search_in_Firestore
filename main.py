@@ -1,4 +1,4 @@
-import os, hashlib, json, re, time, random, string
+import hashlib, json, re, time, random, string, math
 import MeCab, ipadic
 import firebase_admin
 from firebase_admin import firestore
@@ -280,7 +280,7 @@ class FulltextIndex:
                 term_frequency = doc_dict["doc_ids"][text_doc_id]
                 if text_doc_id not in query_results:
                     query_results[text_doc_id] = {}
-                tfidf = term_frequency / len(doc_dict["doc_ids"])
+                tfidf = term_frequency / math.log(len(doc_dict["doc_ids"]))
                 query_results[text_doc_id][term] = tfidf
         # 検索ワードにマッチした結果を取得し、tfidfっぽい値を計算する。
         fully_matched_results = {}
@@ -313,6 +313,7 @@ class FulltextIndex:
         took = str(int((time.time() - now) * 1000)) + " ms"
         return {"total": len(fully_matched_results), "took": took, "hits": results}
 
+
 def main(request):
     method = None
     request_json = request.get_json(silent=True)
@@ -324,12 +325,12 @@ def main(request):
     if method not in ["get", "index", "batch_index", "delete", "delete_by_text", "search"]:
         return json.dumps({"error": "specify a valid method name ([get index batch_index delete search]).", "request_json": request_json, "request.args": request.args})
 
+    q = None
+    size = 10
     text = None
     doc_id = None
-    q = None
-    text_list = None
     metadata = {}
-    size = 10
+    text_list = None
     if request.args and 'text' in request.args:
         text = request.args.get('text')
     if request.args and 'metadata' in request.args:
@@ -352,7 +353,7 @@ def main(request):
 
         doc = fulltext_index.get_text_by_id(doc_id)
         if doc is None:
-            return json.dumps({"result": "not exists", "doc": doc})
+            return json.dumps({"result": "not exists"})
         else:
             return json.dumps({"result": "success", "doc": doc})
 
