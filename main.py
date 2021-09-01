@@ -3,12 +3,12 @@ import MeCab, ipadic
 import firebase_admin
 from firebase_admin import firestore
 from firebase_admin import credentials
+from google.api_core import exceptions
 
-FIRESTORE_PROJECT_ID = "fulltext-project" # Firebaseのプロジェクト名
-TEXTS_COLLECTION_NAME = "texts" # テキストを入れるコレクション。検索結果を表示するときに使う
+FIRESTORE_PROJECT_ID      = "fulltext-project" # Firebaseのプロジェクト名
+TEXTS_COLLECTION_NAME     = "texts" # テキストを入れるコレクション。検索結果を表示するときに使う
 TERM_LIST_COLLECTION_NAME = "terms_list" # テキストに入ってる単語のリストを入れるコレクション。削除時に使う
-TERMS_COLLECTION_NAME = "terms" # 単語 => テキストのdoc_id のMapを保存するコレクション。検索で使う。
-
+TERMS_COLLECTION_NAME     = "terms" # 単語 => テキストのdoc_id のMapを保存するコレクション。検索で使う。
 
 class FulltextIndex:
     def __init__(self):
@@ -19,12 +19,14 @@ class FulltextIndex:
             })
 
         self.db = firestore.client()
-        self.text_collection = self.db.collection(TEXTS_COLLECTION_NAME)
+        self.text_collection      = self.db.collection(TEXTS_COLLECTION_NAME)
         self.term_list_collection = self.db.collection(TERM_LIST_COLLECTION_NAME)
-        self.terms_collection = self.db.collection(TERMS_COLLECTION_NAME)
-        self.is_debug = False
-        self.read_cnt = 0
+        self.terms_collection     = self.db.collection(TERMS_COLLECTION_NAME)
+        
+        self.is_debug   = False
+        self.read_cnt   = 0
         self.update_cnt = 0
+
         self.tagger = MeCab.Tagger(ipadic.MECAB_ARGS)
         self.tagger.parse('')
         self.delete_timeout = 10
@@ -73,22 +75,6 @@ class FulltextIndex:
             node = node.next
         return terms
 
-    # textをtext_collectionに追加する
-    def __add_text(self, text:str, doc_id:str = None, metadata:dict = {}) -> str:
-        if doc_id is None:
-            # text の doc_id が無いなら生成する。
-            doc_id = self.__create_texts_collection_doc_id(text)
-
-        # collectionにデータを追加する
-        hash = self.__hash_text(text)
-        body = {"text": text, "hash":hash}
-        metadata.update(body)
-        body = metadata
-
-        self.text_collection.document(doc_id).set(body)
-        self.update_cnt += 1
-        return doc_id
-
     # textsコレクションからデータを取得する
     def get_text_by_id(self, doc_id:str):
         doc = self.text_collection.document(doc_id).get()
@@ -97,69 +83,64 @@ class FulltextIndex:
         
         return None
 
+
     # 複数件をまとめてfirestoreに入れる
     # text_list: (text, doc_id, metadata) のリスト
-    def index_text_list(self, text_list:list) -> list:
-        terms_dict = {}
+    def batch_index(self, text_list:list) -> list:
+        all_terms_dict = {}
         text_doc_ids = []
-        for text, doc_id, metadata in text_list:
-            if doc_id is not None:
-                # doc_id が重複する場合は古い方を削除する
-                doc = self.text_collection.document(doc_id).get()
+        batch = self.db.batch()
+        for text, text_doc_id, metadata in text_list:
+            if text_doc_id is not None:
+                # text_doc_id が重複する場合は古い方を削除する
+                doc = self.text_collection.document(text_doc_id).get()
                 if doc.exists:
-                    self.delete(doc_id)
+                    self.delete(text_doc_id)
 
-            # まずテキストデータを入れる
-            text_doc_id = self.__add_text(text, doc_id, metadata)
+            text_doc_id, body = self.__build_text_document_data(text, text_doc_id, metadata)
             text_doc_ids.append(text_doc_id)
+            terms_dict = self.__build_term_document_data(text, text_doc_id)
+            
+            # テキストと単語リストをbatchにセットする
+            if len(terms_dict) > 0:
+                batch.set(self.text_collection.document(text_doc_id), body)
+                batch.set(self.term_list_collection.document(text_doc_id), {"term_list": list(terms_dict.keys())})
 
-            # テキストデータは無事入ったのでその後の処理を行う
-            terms = self.__wakati_text(text)
-            for term in terms:
-                if term in [".", ".."] or term.find("/") >= 0:
-                    # print("doc_idに {} は使えません".format(term))
-                    continue
-                if term not in terms_dict:
-                    terms_dict[term] = {"term": term, "doc_ids":{text_doc_id:0}, "num_docs": 0}
-                if text_doc_id not in terms_dict[term]["doc_ids"]:
-                    terms_dict[term]["doc_ids"][text_doc_id] = 0
-                
-                terms_dict[term]["doc_ids"][text_doc_id] += 1 / len(terms)
-                terms_dict[term]["num_docs"] = len(terms_dict[term]["doc_ids"])
+            # 単語データはここでまとめる
+            all_terms_dict = {**all_terms_dict, **terms_dict}
+            
 
-        # データを入れる
-        for term, item in terms_dict.items():
+        # 単語データをバッチにセットする
+        for term, item in all_terms_dict.items():
             item["num_docs"] = firestore.Increment(item["num_docs"])
             self.update_cnt += 1
-            self.terms_collection.document(term).set(item, merge=True)
+            batch.set(self.terms_collection.document(term), item, merge=True)
             
+        # コミットする
+        batch.commit()
         return text_doc_ids
 
-    # テキストをfirestoreに入れて全文検索可能にする
-    def index_text(self, text:str, text_doc_id:str = None, metadata:dict={}) -> str:
-        if text_doc_id is not None:
-            # doc_id が重複する場合は古い方を削除する
-            doc = self.text_collection.document(text_doc_id).get()
-            if doc.exists:
-                self.delete(text_doc_id)
 
-        # batchでテキストと単語を入れる。まずはテキストのほうを準備する
-        batch = self.db.batch()
+    # テキストデータをコレクションに入れるための構造に変える
+    def __build_text_document_data(self, text:str, text_doc_id:str = None, metadata:dict={}):
         if text_doc_id is None:
             # text の doc_id が無いなら生成する。
             text_doc_id = self.__create_texts_collection_doc_id(text)
+
+        if metadata is None:
+            metadata = {}
 
         # text を入れるバッチをセットする
         hash = self.__hash_text(text)
         body = {"text": text, "hash":hash}
         metadata.update(body)
-        body = metadata
-        batch.set(self.text_collection.document(text_doc_id), body)
-
-        # 次は単語をbatchにセットする
+        return text_doc_id, metadata
+        
+    # 単語データをコレクションに入れるための構造に変える
+    def __build_term_document_data(self, text:str, text_doc_id:str):
+        terms_dict = {}
         terms = self.__wakati_text(text)
         # 単語コレクションに入れるデータは単語ごとにまとめる
-        terms_dict = {}
         for term in terms:
             if term in [".", ".."] or term.find("/") >= 0:
                 # print("doc_idに {} は使えません".format(term))
@@ -171,6 +152,24 @@ class FulltextIndex:
                 terms_dict[term]["doc_ids"][text_doc_id] = 0
             terms_dict[term]["doc_ids"][text_doc_id] += 1 / len(terms) # term frequency
             terms_dict[term]["num_docs"] = len(terms_dict[term]["doc_ids"])# doc frequecy に該当する値。実はtfidf計算時には使ってない。
+
+        return terms_dict
+
+    # テキストをfirestoreに入れて全文検索可能にする
+    def index_text(self, text:str, text_doc_id:str = None, metadata:dict={}) -> str:
+        if text_doc_id is not None:
+            # doc_id が重複する場合は古い方を削除する
+            doc = self.text_collection.document(text_doc_id).get()
+            if doc.exists:
+                self.delete(text_doc_id)
+
+        # batchでテキストと単語を入れる。まずはテキストのほうをセットする
+        batch = self.db.batch()
+        text_doc_id, body = self.__build_text_document_data(text, text_doc_id, metadata)
+        batch.set(self.text_collection.document(text_doc_id), body)
+
+        # 次は単語をbatchにセットする
+        terms_dict = self.__build_term_document_data(text, text_doc_id)
 
         # 単語データをbatchにセットする
         for term, item in terms_dict.items():
@@ -314,8 +313,8 @@ def main(request):
     elif request.args and 'method' in request.args:
         method = request.args.get('method')
 
-    if method not in ["get", "index", "index_text_list", "delete", "delete_by_text", "search"]:
-        return json.dumps({"error": "specify a valid method name ([get index index_text_list delete delete_by_text search]).", "request_json": request_json, "request.args": request.args})
+    if method not in ["get", "index", "batch_index", "delete", "delete_by_text", "search"]:
+        return json.dumps({"error": "specify a valid method name ([get index batch_index delete search]).", "request_json": request_json, "request.args": request.args})
 
     text = None
     doc_id = None
@@ -359,11 +358,16 @@ def main(request):
         else:
             return json.dumps({"result": "created", "doc_id": new_doc_id, "took": time.time() - now})
 
-    if method == "index_text_list":
+    if method == "batch_index":
         if text_list is None:
             return json.dumps({"error": "specify text_list parameter. "})
 
-        text_doc_ids = fulltext_index.index_text_list(text_list)
+        try  :
+            text_doc_ids = fulltext_index.batch_index(text_list)
+        except exceptions.InvalidArgument as ex:
+            # 400 maximum 500 writes allowed per request
+            return json.dumps({"error": "google.api_core.exceptions.InvalidArgument: 400 maximum 500 writes allowed per request"})
+
         if len(text_doc_ids) > 0:
             return json.dumps({"result": "created", "text_doc_ids": text_doc_ids})
         else:
