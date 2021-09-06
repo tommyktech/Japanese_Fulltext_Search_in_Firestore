@@ -7,30 +7,42 @@ from google.api_core import exceptions
 
 FIRESTORE_PROJECT_ID      = "fulltext-project" # Firebaseのプロジェクト名
 TEXTS_COLLECTION_NAME     = "texts" # テキストを入れるコレクション。検索結果を表示するときに使う
-TERM_LIST_COLLECTION_NAME = "terms_list" # テキストに入ってる単語のリストを入れるコレクション。削除時に使う
-TERMS_COLLECTION_NAME     = "terms" # 単語 => テキストのdoc_id のMapを保存するコレクション。検索で使う。
+TERM_LIST_COLLECTION_NAME = "terms_list_ngram" # テキストに入ってる単語のリストを入れるコレクション。削除時に使う
+TERMS_COLLECTION_NAME     = "terms_ngram" # 単語 => テキストのdoc_id のMapを保存するコレクション。検索で使う。
+
+ANALYZER_MECAB  = "mecab"
+ANALYZER_NGRAM  = "ngram"
+NGRAM_MIN_CHARS = 1
+NGRAM_MAX_CHARS = 3
 
 class FulltextIndex:
-    def __init__(self):
+    def __init__(self, analyzer:str=ANALYZER_MECAB):
+        """init関数
+        Args:
+            analyzer (str): テキストを分かち書きする方法を指定する。ここは途中で変えてはいけない。
+        """
+
         if not firebase_admin._apps:
             cred = credentials.ApplicationDefault()
             firebase_admin.initialize_app(cred,{
                 'projectId': FIRESTORE_PROJECT_ID,
             })
 
+        if analyzer == ANALYZER_MECAB:
+            self.analyzer = MeCabAnalyzer()
+        elif analyzer == ANALYZER_NGRAM:
+            self.analyzer = NgramAnalyzer(NGRAM_MIN_CHARS, NGRAM_MAX_CHARS)
+
         self.db = firestore.client()
         self.text_collection      = self.db.collection(TEXTS_COLLECTION_NAME)
         self.term_list_collection = self.db.collection(TERM_LIST_COLLECTION_NAME)
         self.terms_collection     = self.db.collection(TERMS_COLLECTION_NAME)
+        self.delete_timeout       = 10
         
         self.is_debug   = False
         self.read_cnt   = 0
         self.update_cnt = 0
-
-        self.tagger = MeCab.Tagger(ipadic.MECAB_ARGS)
-        self.tagger.parse('')
-        self.delete_timeout = 10
-
+    
 
     def print_access_count(self):
         if self.is_debug:
@@ -64,21 +76,6 @@ class FulltextIndex:
         return hashed_str
 
 
-    # mecabで分かち書き
-    def __wakati_text(self, text:str) -> list:
-        node = self.tagger.parseToNode(text)
-        terms = []
-
-        while node:
-            term = node.surface
-            pos = node.feature.split(',')[0]
-            if pos not in ["助詞", "助動詞", "記号"]:
-                if term != "":
-                    terms.append(term)
-            node = node.next
-        return terms
-
-
     # テキストデータをコレクションに入れるための構造に変える
     def __build_text_document_data(self, text:str, text_doc_id:str = None, metadata:dict={}):
         if text_doc_id is None:
@@ -98,7 +95,7 @@ class FulltextIndex:
     # 単語データをコレクションに入れるための構造に変える
     def __build_term_document_data(self, text:str, text_doc_id:str):
         terms_dict = {}
-        terms = self.__wakati_text(text)
+        terms = self.analyzer.analyze(text)
         # 単語コレクションに入れるデータは単語ごとにまとめる
         for term in terms:
             if term in [".", ".."] or term.find("/") >= 0:
@@ -265,7 +262,7 @@ class FulltextIndex:
         query_str = re.sub(r"[ 　]+", " ", query_str)
         query_terms = {}
         for term in query_str.split(" "):
-            for t in self.__wakati_text(term):
+            for t in self.analyzer.analyze(term):
                 query_terms[t] = True
         query_terms = list(query_terms.keys())
 
@@ -280,7 +277,7 @@ class FulltextIndex:
                 term_frequency = doc_dict["doc_ids"][text_doc_id]
                 if text_doc_id not in query_results:
                     query_results[text_doc_id] = {}
-                tfidf = term_frequency / math.log(len(doc_dict["doc_ids"]))
+                tfidf = term_frequency / math.log(len(doc_dict["doc_ids"]) + 1)
                 query_results[text_doc_id][term] = tfidf
         # 検索ワードにマッチした結果を取得し、tfidfっぽい値を計算する。
         fully_matched_results = {}
@@ -312,6 +309,42 @@ class FulltextIndex:
             results.append({"text_doc_id": text_doc_id, "text": doc_dict["text"], "score": score})
         took = str(int((time.time() - now) * 1000)) + " ms"
         return {"total": len(fully_matched_results), "took": took, "hits": results}
+
+# n-gram Analyzer
+class NgramAnalyzer:
+    def __init__(self, min_n, max_n):
+        self.min_n = min_n
+        self.max_n = max_n
+
+    def analyze(self, text:str) -> list:
+        terms = []
+        for n in range(self.min_n, self.max_n + 1):
+            terms += self.__parse_n(text, n)
+        
+        return terms
+
+    def __parse_n(self, text:str, n:int) -> list:
+        return [text[i:i + n] for i in range(len(text) - n + 1)]
+
+# MeCab Anayzer
+class MeCabAnalyzer:
+    def __init__(self):
+        self.tagger = MeCab.Tagger(ipadic.MECAB_ARGS)
+        self.tagger.parseToNode('')
+
+    def analyze(self, text:str) -> list:
+        node = self.tagger.parseToNode(text)
+        terms = []
+
+        while node:
+            term = node.surface
+            pos = node.feature.split(',')[0]
+            if pos not in ["助詞", "助動詞", "記号"]:
+                if term != "":
+                    terms.append(term)
+            node = node.next
+        return terms
+
 
 
 def main(request):
