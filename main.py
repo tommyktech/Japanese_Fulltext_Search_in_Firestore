@@ -7,8 +7,8 @@ from google.api_core import exceptions
 
 FIRESTORE_PROJECT_ID      = "fulltext-project" # Firebaseのプロジェクト名
 TEXTS_COLLECTION_NAME     = "texts" # テキストを入れるコレクション。検索結果を表示するときに使う
-TERM_LIST_COLLECTION_NAME = "terms_list_ngram" # テキストに入ってる単語のリストを入れるコレクション。削除時に使う
-TERMS_COLLECTION_NAME     = "terms_ngram" # 単語 => テキストのdoc_id のMapを保存するコレクション。検索で使う。
+TERM_LIST_COLLECTION_NAME = "terms_list" # テキストに入ってる単語のリストを入れるコレクション。削除時に使う
+TERMS_COLLECTION_NAME     = "terms" # 単語 => テキストのdoc_id のMapを保存するコレクション。検索で使う。
 
 ANALYZER_MECAB  = "mecab"
 ANALYZER_NGRAM  = "ngram"
